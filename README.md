@@ -14,7 +14,7 @@ Installation
 ------------
 ```
 cd /var/lib/dokku/plugins
-git clone https://github.com/stephenbaidu/dokku-pg-plugin postgresql
+git clone https://github.com/zakdoek/dokku-pg-plugin postgresql
 dokku plugins-install
 ```
 
