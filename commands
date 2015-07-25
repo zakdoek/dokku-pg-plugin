@@ -228,7 +228,7 @@ case "$1" in
         echo $VOLUME_PATH > "$PG_PLUGIN_HOME/volume_$APP"
 
         # Generate a random password for DB user
-        DB_PASSWORD=$(openssl rand -base64 64 | tr '+/' '-_')
+        DB_PASSWORD=$(openssl rand -base64 64 | tr -d '\n' | tr '+/' '-_')
         echo $DB_PASSWORD > "$PG_PLUGIN_HOME/pwd_$APP"
         chown dokku: "$PG_PLUGIN_HOME/pwd_$APP"
         chmod 700 "$PG_PLUGIN_HOME/pwd_$APP"
