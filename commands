@@ -221,7 +221,7 @@ case "$1" in
     else
 
         # Create volume
-        VOLUME_PATH="$PG_PLUGIN_HOME/data/$(uuid)/postgres-data"
+        VOLUME_PATH="$PG_PLUGIN_HOME/data/$(uuid)"
         mkdir -p $VOLUME_PATH
         chown -R dokku: $VOLUME_PATH
         VOLUME="$VOLUME_PATH:/opt/postgresql"
@@ -265,7 +265,9 @@ case "$1" in
     rm -f "$PG_PLUGIN_HOME/pwd_$APP"
 
     # Remove persistent volume
-    rm -rf $(cat "$PG_PLUGIN_HOME/volume_$APP")
+    # rm -rf $(cat "$PG_PLUGIN_HOME/volume_$APP")
+    # Leave the data for now, find sollution later
+
     rm -f "$PG_PLUGIN_HOME/volume_$APP"
 
     # Unset link
