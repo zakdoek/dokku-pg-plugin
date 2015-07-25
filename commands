@@ -265,7 +265,7 @@ case "$1" in
     rm -f "$PG_PLUGIN_HOME/pwd_$APP"
 
     # Remove persistent volume
-    rm -rf "$(cat $PG_PLUGIN_HOME/volume_$APP)"
+    rm -rf $(cat "$PG_PLUGIN_HOME/volume_$APP")
     rm -f "$PG_PLUGIN_HOME/volume_$APP"
 
     # Unset link
