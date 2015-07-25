@@ -267,6 +267,11 @@ case "$1" in
     rm -rf "$(cat $PG_PLUGIN_HOME/volume_$APP)"
     rm -f "$PG_PLUGIN_HOME/volume_$APP"
 
+    # Unset link
+    if $APP_EXISTS; then
+        dokku config:unset $APP DATABASE_URL
+    fi
+
     echo
     echo "-----> PostgreSQL container deleted: $image_name"
     ;;
