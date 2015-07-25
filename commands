@@ -264,7 +264,7 @@ case "$1" in
     rm -f "$PG_PLUGIN_HOME/pwd_$APP"
 
     # Remove persistent volume
-    rm -rf "$(get_volume)"
+    rm -rf "$(cat $PG_PLUGIN_HOME/volume_$APP)"
     rm -f "$PG_PLUGIN_HOME/volume_$APP"
 
     echo
