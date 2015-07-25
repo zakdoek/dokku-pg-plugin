@@ -420,25 +420,6 @@ case "$1" in
     fi
     ;;
 
-  # Migrate from to new structure
-  postgresql:migrate)
-    # Stop current database
-    kill_container
-    # Copy volume to new location
-    OLD_VOLUME=$(cat "$PG_PLUGIN_HOME/volume_$APP")
-    NEW_VOLUME="$PG_PLUGIN_HOME/data/$(uuid)"
-    cp -r $OLD_VOLUME $NEW_VOLUME
-    # Adjust volume file
-    echo $OLD_VOLUME > "$PG_PLUGIN_HOME/backup_volume_$APP"
-    echo $NEW_VOLUME > "$PG_PLUGIN_HOME/volume_$APP"
-    # Start a new database
-    launch_container
-    # Re link to app if linked
-    if $APP_EXISTS; then
-        dokku postgresql:link $APP $APP
-    fi
-    ;;
-
   # Help command
   help)
     cat && cat<<EOF
