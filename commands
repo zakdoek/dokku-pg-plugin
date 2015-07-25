@@ -1,5 +1,12 @@
-#!/bin/bash
-set -e;
+#!/usr/bin/env bash
+set -eo pipefail; [[ $DOKKU_TRACE ]] && set -x
+
+# TODO: (Re-)Link app on deploy
+
+PG_PLUGIN_VERSION="2.0"
+PG_PLUGIN_HOME="$DOKKU_ROOT/.postgresql"
+PG_PLUGIN_PRIVATE_PORT=5432
+PG_PLUGIN_POSTGRESQL_IMAGE="kloadut/postgresql"
 
 # Check if name is specified
 if [[ $1 == postgresql:* ]]; then
@@ -18,13 +25,96 @@ if [[ $1 == postgresql:* ]]; then
 fi
 
 # Create .postgresql diretory if not exists
-if [[ ! -d $DOKKU_ROOT/.postgresql ]]; then
-    mkdir -p $DOKKU_ROOT/.postgresql
-    chown -R dokku: $DOKKU_ROOT/.postgresql
+if [[ ! -d $PG_PLUGIN_HOME ]]; then
+    mkdir -p $PG_PLUGIN_HOME/data
+    chown -R dokku: $PG_PLUGIN_HOME
 fi
 
+# For getting random volume names
+uuid() {
+    cat /proc/sys/kernel/random/uuid
+}
+
+# Pw getter
+get_password() {
+
+    local db_password=""
+
+    if [[ -f "$PG_PLUGIN_HOME/pwd_$APP" ]]; then
+        db_password=$(cat "$PG_PLUGIN_HOME/pwd_$APP")
+    fi
+
+    echo $db_password
+}
+
+# Volume getter
+get_volume() {
+
+    local volume=""
+
+    if [[ -f "$PG_PLUGIN_HOME/volume_$APP" ]]; then
+        volume="$(cat $PG_PLUGIN_HOME/volume_$APP):/opt/postgresql"
+    fi
+
+    echo $volume
+}
+
+check_source_image() {
+    # Check if DB container is installed
+    local source_image_id=$(docker images | grep "$PG_PLUGIN_POSTGRESQL_IMAGE" |  awk '{print $3}')
+    if [[ -z $source_image_id ]]; then
+        echo "PostgreSQL image not found... Did you run 'dokku plugins-install' ?"
+        exit 1
+    fi
+}
+
+# Image getter, returns image id
+get_image() {
+
+    # Fetch the desired image name
+    local image_name="postgresql/$APP" 
+    
+    # Check image source availability
+    check_source_image
+
+    # Fork DB image
+    if [[ -z $(docker images | grep $image_name) ]]; then
+
+        echo "PostgreSQL fork not found, creating \"$image_name\"..."
+
+        local container_id=$(docker run -d $source_image_id echo "")
+        docker wait $container_id > /dev/null
+        local fork_id=$(docker commit $container_id)
+        docker tag $fork_id $image_name
+
+    fi 
+
+    echo $image_name
+}
+
+# Test if exposed
+is_exposed() {
+
+    local result_value=false
+
+    if [[ -f $PG_PLUGIN_HOME/exposed_$APP ]]; then
+        result_value=true
+    fi
+
+    echo $result_value
+}
+
+# Test if instance is running
+is_running() {
+    local is_container_running=false
+    if [[ -n $(docker ps | grep "$(get_image)" ) ]]; then
+        is_container_running=true
+    fi
+    echo $is_container_running
+}
+
 function check_postgresql_container() {
-    if [[ ! -f "$DOKKU_ROOT/.postgresql/pwd_$APP" ]]; then
+    if [[ ! -f "$PG_PLUGIN_HOME/pwd_$APP" ]]; then
         echo "Unknown (or too old) PostgreSQL container"
         exit 1
     fi
@@ -39,29 +129,76 @@ function check_postgresql_tool() {
 }
 
 function get_postgresql_id() {
-    ID=$(docker ps | grep postgresql/"$APP" | awk {'print $1'})
-    echo $ID
+    local container_id=$(docker ps | grep "$(get_image)" | awk {'print $1'})
+    echo $container_id
 }
 
 function get_postgresql_ip() {
-    ID=$(get_postgresql_id)
-    IP=$(docker inspect --format '{{ .NetworkSettings.Gateway }}' $ID)
-    echo $IP
+    local postgres_container=$(get_postgresql_id)
+    local ip_address=""
+
+    if [[ $(is_exposed) = true ]]; then
+        # Get the public ip address
+        ip_address=$(docker port $postgres_container $PG_PLUGIN_PRIVATE_PORT | awk -F : '{ print $1 }')
+    else
+        # Get the private ip address
+        ip_address=$(docker inspect --format '{{ .NetworkSettings.IPAddress }}' $postgres_container)
+    fi
+
+    echo $ip_address
 }
 
 function get_postgresql_port() {
-    ID=$(get_postgresql_id)
-    PORT=$(docker port "$ID" 5432 | sed 's/0.0.0.0://')
-    echo $PORT
+    local postgres_container=$(get_postgresql_id)
+    local postgres_port=""
+
+    if [[ $(is_exposed) = true ]]; then
+        # Get exposed port
+        postgres_port=$(docker port $postgres_container $PG_PLUGIN_PRIVATE_PORT | awk -F : '{ print $2 }')
+    else
+        # Use standard port
+        postgres_port=$PG_PLUGIN_PRIVATE_PORT
+    fi
+
+    echo $postgres_port
 }
 
 
 function connect_to_db() {
-    export PGPASSWORD=$(cat "$DOKKU_ROOT/.postgresql/pwd_$APP")
-    IP=$(get_postgresql_ip)
-    PORT=$(get_postgresql_port)
+    export PGPASSWORD=$(get_password)
+    local postgres_ip=$(get_postgresql_ip)
+    local postgres_port=$(get_postgresql_port)
 
-    psql -h $IP -p $PORT -U root db
+    psql -h $postgres_ip -p $postgres_port -U root db
+}
+
+# Launches container, returns container id
+# Takes image, volume and password
+launch_container() {
+    local image=$(get_image)
+    local volume=$(get_volume)
+    local password=$(get_password)
+
+    # Only launch when not running
+    if [[ $(is_running) = false ]]; then
+        if [[ is_exposed = true ]]; then
+            docker run -v $volume -p $PG_PLUGIN_PRIVATE_PORT -d $image /usr/bin/start_pgsql.sh $password
+        else
+            docker run -v $volume -d $image /usr/bin/start_pgsql.sh $password
+        fi
+    fi
+}
+
+# Stops and remove the container
+kill_container() {
+    local container_id=$(get_postgresql_id)
+    # Stop and remove the container
+    if [[ -n $container_id ]]; then
+        docker kill $container_id > /dev/null
+        sleep 1
+        docker rm -v $container_id > /dev/null
+        sleep 1
+    fi
 }
 
 case "$1" in
@@ -73,87 +210,79 @@ case "$1" in
     ;;
 
   postgresql:create)
-    DB_IMAGE=postgresql/$APP
-    # Check if DB container is installed
-    IMAGE=$(docker images | grep "kloadut/postgresql " |  awk '{print $3}')
-    if [[ -z $IMAGE ]]; then
-        echo "PostgreSQL image not found... Did you run 'dokku plugins-install' ?"
-        exit 1
-    fi
+    
+    # First, check the source image
+    check_source_image
+
     # Check if an existing DB volume exists
-    if [[ -f "$DOKKU_ROOT/.postgresql/volume_$APP" ]]; then
-        VOLUME="`cat $DOKKU_ROOT/.postgresql/volume_$APP`:/opt/postgresql"
+    VOLUME=$(get_volume)
+    if [[ -n $VOLUME ]]; then
+
+        # Get password
+        DB_PASSWORD=$(get_password)
         echo
         echo "-----> Reusing postgresql/$APP database"
     else
-        VOLUME="/opt/postgresql"
+
+        # Create volume
+        VOLUME_PATH="$PG_PLUGIN_HOME/data/$(uuid)"
+        mkdir -p $VOLUME_PATH
+        VOLUME="$VOLUME_PATH:/opt/postgresql"
+        echo $VOLUME_PATH > "$PG_PLUGIN_HOME/volume_$APP"
+
         # Generate a random password for DB user
         DB_PASSWORD=$(< /dev/urandom tr -dc A-Za-z0-9 | head -c 16)
-        echo $DB_PASSWORD > "$DOKKU_ROOT/.postgresql/pwd_$APP"
-        chown dokku: "$DOKKU_ROOT/.postgresql/pwd_$APP"
-        chmod 700 "$DOKKU_ROOT/.postgresql/pwd_$APP"
+        echo $DB_PASSWORD > "$PG_PLUGIN_HOME/pwd_$APP"
+        chown dokku: "$PG_PLUGIN_HOME/pwd_$APP"
+        chmod 700 "$PG_PLUGIN_HOME/pwd_$APP"
+
     fi
-    # Fork DB image
-    ID=$(docker run -d kloadut/postgresql echo '')
-    docker wait $ID > /dev/null
-    IMAGE=$(docker commit $ID)
-    docker tag $IMAGE $DB_IMAGE
+
     # Launch container
-    ID=$(docker run -v $VOLUME -p 5432 -d $DB_IMAGE /usr/bin/start_pgsql.sh $DB_PASSWORD)
+    launch_container
     sleep 4
-    # Rename persistent volume
-    if [[ ! -f "$DOKKU_ROOT/.postgresql/volume_$APP" ]]; then
-        VOLUME_PATH=$(docker inspect $ID | grep /var/lib/docker/volumes | awk '{print $2}' | sed -e's/"//g')
-        if [[ -z $VOLUME_PATH ]]; then
-            echo "Your docker version is too old, please update it"
-            exit 1
-        fi
-        echo $VOLUME_PATH > "$DOKKU_ROOT/.postgresql/volume_$APP"
-    fi
-    # Link to a potential existing app
+    
+    # Link to a potential existing db
     dokku postgresql:link $APP $APP
     echo
     echo "-----> PostgreSQL container created: $DB_IMAGE"
     sleep 1
+
+    # Show info of freshly created db
     dokku postgresql:info $APP
     ;;
 
   postgresql:delete)
-    DB_IMAGE=postgresql/$APP
-    ID=$(get_postgresql_id)
+    local image_name="postgresql/$APP"
+
     # Stop and remove the container
-    if [[ ! -z $ID ]]; then
-        docker kill $ID > /dev/null
-        sleep 1
-        docker rm -v $ID > /dev/null
-        sleep 1
-    fi
+    kill_container
+
     # Remove image
-    IMAGE=$(docker images | grep "$DB_IMAGE " |  awk '{print $1}')
-    if [[ ! -z $IMAGE ]]; then
-        docker rmi $IMAGE > /dev/null
-    fi
-    # Remove container root password
-    if [[ -f "$DOKKU_ROOT/.postgresql/pwd_$APP" ]]; then
-        rm -f "$DOKKU_ROOT/.postgresql/pwd_$APP"
-    fi
-    # Remove persistent volume
-    if [[ -f "$DOKKU_ROOT/.postgresql/volume_$APP" ]]; then
-        rm -f "$DOKKU_ROOT/.postgresql/volume_$APP"
+    local image_id=$(docker images | grep "$image_name" |  awk '{print $1}')
+    if [[ ! -z $image_id ]]; then
+        docker rmi $image_id > /dev/null
     fi
 
+    # Remove container root password
+    rm -f "$PG_PLUGIN_HOME/pwd_$APP"
+
+    # Remove persistent volume
+    rm -rf "$(get_volume)"
+    rm -f "$PG_PLUGIN_HOME/volume_$APP"
+
     echo
-    echo "-----> PostgreSQL container deleted: $DB_IMAGE"
+    echo "-----> PostgreSQL container deleted: $image_name"
     ;;
 
   postgresql:dump)
     check_postgresql_container
     check_postgresql_tool pg_dump
-    export PGPASSWORD=$(cat "$DOKKU_ROOT/.postgresql/pwd_$APP")
-    IP=$(get_postgresql_ip)
-    PORT=$(get_postgresql_port)
+    export PGPASSWORD=$(get_password)
+    local postgres_ip=$(get_postgresql_ip)
+    local postgres_port=$(get_postgresql_port)
 
-    pg_dump -h $IP -p $PORT -U root -c -O db
+    pg_dump -h $postgres_ip -p $postgres_port -U root -c -O db
 
     # echo to stderr, as stdout will probably be redirected to a file
     echo 1>&2
@@ -162,21 +291,28 @@ case "$1" in
 
   postgresql:info)
     check_postgresql_container
-    DB_PASSWORD=$(cat "$DOKKU_ROOT/.postgresql/pwd_$APP")
-    IP=$(get_postgresql_ip)
-    PORT=$(get_postgresql_port)
+    local pg_password=$(get_password)
+    local pg_ip=$(get_postgresql_ip)
+    local pg_port=$(get_postgresql_port)
 
     echo
-    echo "       Host: $IP"
-    echo "       Port: $PORT"
+    echo "       Host: $pg_ip"
+    echo "       Port: $pg_port"
     echo "       User: 'root'"
-    echo "       Password: '$DB_PASSWORD'"
+    echo "       Password: '$pg_password'"
     echo "       Database: 'db'"
+    if [[ $(is_exposed) = true ]]; then
+        echo "       Exposed: Yes"
+    else
+        echo "       Exposed: No"
+    fi
     echo
-    echo "       Url: 'postgres://root:$DB_PASSWORD@$IP:$PORT/db'"
+    echo "       Url: 'postgres://root:$pg_password@$pg_ip:$pg_port/db'"
     echo
     ;;
 
+  # Link the database to equally named app
+  # TODO: Do not rely on the existence or equal namedness of an app
   postgresql:link)
     if $APP_EXISTS; then
         # Check argument
@@ -185,11 +321,11 @@ case "$1" in
             exit 1
         fi
         DB_IMAGE="postgresql/$3"
-        if [[ ! -f "$DOKKU_ROOT/.postgresql/pwd_$3" ]]; then
+        if [[ ! -f "$PG_PLUGIN_HOME/pwd_$3" ]]; then
             echo "Database is not initialized correctly. Did you run 'dokku plugins-install'?"
             exit 1
         fi
-        DB_PASSWORD=$(cat "$DOKKU_ROOT/.postgresql/pwd_$3")
+        DB_PASSWORD=$(cat "$PG_PLUGIN_HOME/pwd_$3")
         IP=$(get_postgresql_ip)
         PORT=$(get_postgresql_port)
         # Link database using dokku command
@@ -199,13 +335,16 @@ case "$1" in
     fi
     ;;
 
+  # Show the logs of the selected database container
   postgresql:logs)
     ID=$(get_postgresql_id)
     docker logs $ID | tail -n 100
     ;;
 
+  # List all database containers
+  # TODO: Do not rely on volume_* files. Do consistenly rely on either pwd_* or volume_*
   postgresql:list)
-    CONTAINERS=$(ls $DOKKU_ROOT/.postgresql/volume* 2> /dev/null | sed -e 's/_/ /' | awk '{print $2}')
+    CONTAINERS=$(ls $PG_PLUGIN_HOME/volume* 2> /dev/null | sed -e 's/_/ /' | awk '{print $2}')
     if [[ -z $CONTAINERS ]]; then
         echo "There are no PostgreSQL containers created."
     else
@@ -216,6 +355,7 @@ case "$1" in
     fi
     ;;
 
+  # Restore the database
   postgresql:restore)
     check_postgresql_container
     check_postgresql_tool psql
@@ -225,6 +365,68 @@ case "$1" in
     echo "-----> $APP database restored"
     ;;
 
+  # Pre deploy
+  postgresql:pre_deploy)
+    # Check if database exists for app
+    if [[ -f "$PG_PLUGIN_HOME/pwd_$APP" ]]; then
+
+        echo "-----> Checking status of PostgreSQL"
+
+        if [[ $(is_running) = false ]]; then
+            echo "-----> Starting PostgreSQL"
+            # Launch
+            launch_container
+
+            # Re-link
+            dokku postgresql:link $APP $APP
+        fi
+
+    fi
+    ;;
+
+  
+  # Expose database to network
+  postgresql:expose)
+    if [[ $(is_exposed) = false ]]; then
+
+        # Set expose flag
+        echo "true" > "$PG_PLUGIN_HOME/exposed_$APP"
+        # Restart the image with correct params
+        kill_container
+        launch_container
+
+        # Relink
+        dokku postgresql:link $APP $APP
+    fi
+    ;;
+
+  # Hide exposure
+  postgresql:hide)
+
+    if [[ $(is_exposed) = true ]]; then
+
+        # Remove exposed flag
+        rm -r $PG_PLUGIN_HOME/exposed_$APP
+        # Restart the image with the correct params
+        kill_container
+        launch_container
+
+        # Relink
+        dokku postgresql:link $APP $APP
+
+    fi
+    ;;
+
+  # Migrate from to new structure
+  postgresql:migrate)
+    # Stop current database
+    # Copy volume to new location
+    # Adjust volume file
+    # Start a new database
+    # Re link to app if linked
+    ;;
+
+  # Help command
   help)
     cat && cat<<EOF
     postgresql:console <db>                        Open a PostgreSQL console
@@ -236,7 +438,14 @@ case "$1" in
     postgresql:list                                Display list of PostgreSQL containers
     postgresql:logs <db>                           Display last logs from PostgreSQL container
     postgresql:restore <db> < dump_file.sql        Restore database data from a previous dump
+    postgresql:expose <db>                         Expose a database directly to the network
+    postgresql:hide <db>                           Undo the expose
 EOF
+    ;;
+
+  # Catch all
+  *)
+    exit $DOKKU_NOT_IMPLEMENTED_EXIT
     ;;
 
 esac
