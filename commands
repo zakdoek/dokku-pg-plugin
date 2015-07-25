@@ -221,7 +221,7 @@ case "$1" in
     else
 
         # Create volume
-        VOLUME_PATH="$PG_PLUGIN_HOME/data/$(uuid)"
+        VOLUME_PATH="$PG_PLUGIN_HOME/data/$(uuid)/postgres-data"
         mkdir -p $VOLUME_PATH
         chown -R dokku: $VOLUME_PATH
         VOLUME="$VOLUME_PATH:/opt/postgresql"
