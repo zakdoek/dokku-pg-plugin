@@ -218,8 +218,6 @@ case "$1" in
     VOLUME=$(get_volume)
     if [[ -n $VOLUME ]]; then
 
-        # Get password
-        DB_PASSWORD=$(get_password)
         echo
         echo "-----> Reusing postgresql/$APP database"
     else
@@ -232,7 +230,7 @@ case "$1" in
 
         # Generate a random password for DB user
         DB_PASSWORD=$(< /dev/urandom tr -dc A-Za-z0-9 | head -c 16)
-        echo $DB_PASSWORD > "$PG_PLUGIN_HOME/pwd_$APP"
+        echo "$DB_PASSWORD" > "$PG_PLUGIN_HOME/pwd_$APP"
         chown dokku: "$PG_PLUGIN_HOME/pwd_$APP"
         chmod 700 "$PG_PLUGIN_HOME/pwd_$APP"
 
@@ -253,15 +251,15 @@ case "$1" in
     ;;
 
   postgresql:delete)
-    local image_name="postgresql/$APP"
+    IMAGE_NAME="postgresql/$APP"
 
     # Stop and remove the container
     kill_container
 
     # Remove image
-    local image_id=$(docker images | grep "$image_name" |  awk '{print $1}')
-    if [[ ! -z $image_id ]]; then
-        docker rmi $image_id > /dev/null
+    IMAGE_ID=$(docker images | grep "$IMAGE_NAME" |  awk '{print $1}')
+    if [[ ! -z $IMAGE_ID ]]; then
+        docker rmi $IMAGE_ID > /dev/null
     fi
 
     # Remove container root password
@@ -279,10 +277,10 @@ case "$1" in
     check_postgresql_container
     check_postgresql_tool pg_dump
     export PGPASSWORD=$(get_password)
-    local postgres_ip=$(get_postgresql_ip)
-    local postgres_port=$(get_postgresql_port)
+    IP=$(get_postgresql_ip)
+    PORT=$(get_postgresql_port)
 
-    pg_dump -h $postgres_ip -p $postgres_port -U root -c -O db
+    pg_dump -h $IP -p $PORT -U root -c -O db
 
     # echo to stderr, as stdout will probably be redirected to a file
     echo 1>&2
@@ -291,15 +289,15 @@ case "$1" in
 
   postgresql:info)
     check_postgresql_container
-    local pg_password=$(get_password)
-    local pg_ip=$(get_postgresql_ip)
-    local pg_port=$(get_postgresql_port)
+    DB_PASSWORD=$(get_password)
+    IP=$(get_postgresql_ip)
+    PORT=$(get_postgresql_port)
 
     echo
-    echo "       Host: $pg_ip"
-    echo "       Port: $pg_port"
+    echo "       Host: $IP"
+    echo "       Port: $PORT"
     echo "       User: 'root'"
-    echo "       Password: '$pg_password'"
+    echo "       Password: '$DB_PASSWORD'"
     echo "       Database: 'db'"
     if [[ $(is_exposed) = true ]]; then
         echo "       Exposed: Yes"
@@ -307,7 +305,7 @@ case "$1" in
         echo "       Exposed: No"
     fi
     echo
-    echo "       Url: 'postgres://root:$pg_password@$pg_ip:$pg_port/db'"
+    echo "       Url: 'postgres://root:$DB_PASSWORD@$IP:$PORT/db'"
     echo
     ;;
 
