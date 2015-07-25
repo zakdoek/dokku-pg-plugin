@@ -346,7 +346,6 @@ case "$1" in
     ;;
 
   # List all database containers
-  # TODO: Do not rely on volume_* files. Do consistenly rely on either pwd_* or volume_*
   postgresql:list)
     CONTAINERS=$(ls $PG_PLUGIN_HOME/volume* 2> /dev/null | sed -e 's/_/ /' | awk '{print $2}')
     if [[ -z $CONTAINERS ]]; then
@@ -424,10 +423,20 @@ case "$1" in
   # Migrate from to new structure
   postgresql:migrate)
     # Stop current database
+    kill_container
     # Copy volume to new location
+    OLD_VOLUME=$(cat "$PG_PLUGIN_HOME/volume_$APP")
+    NEW_VOLUME="$PG_PLUGIN_HOME/data/$(uuid)"
+    cp -r $OLD_VOLUME $NEW_VOLUME
     # Adjust volume file
+    echo $OLD_VOLUME > "$PG_PLUGIN_HOME/backup_volume_$APP"
+    echo $NEW_VOLUME > "$PG_PLUGIN_HOME/volume_$APP"
     # Start a new database
+    launch_container
     # Re link to app if linked
+    if $APP_EXISTS; then
+        dokku postgresql:link $APP $APP
+    fi
     ;;
 
   # Help command
