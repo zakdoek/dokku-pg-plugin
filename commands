@@ -80,9 +80,7 @@ get_image() {
     # Fork DB image
     if [[ -z $(docker images | grep $image_name) ]]; then
 
-        echo "PostgreSQL fork not found, creating \"$image_name\"..."
-
-        local container_id=$(docker run -d $source_image_id echo "")
+        local container_id=$(docker run -d $PG_PLUGIN_POSTGRESQL_IMAGE echo "")
         docker wait $container_id > /dev/null
         local fork_id=$(docker commit $container_id)
         docker tag $fork_id $image_name
@@ -182,9 +180,9 @@ launch_container() {
     # Only launch when not running
     if [[ $(is_running) = false ]]; then
         if [[ is_exposed = true ]]; then
-            docker run -v $volume -p $PG_PLUGIN_PRIVATE_PORT -d $image /usr/bin/start_pgsql.sh $password
+            docker run -v $volume -p $PG_PLUGIN_PRIVATE_PORT -d $image /usr/bin/start_pgsql.sh $password > /dev/null
         else
-            docker run -v $volume -d $image /usr/bin/start_pgsql.sh $password
+            docker run -v $volume -d $image /usr/bin/start_pgsql.sh $password > /dev/null
         fi
     fi
 }
@@ -229,8 +227,8 @@ case "$1" in
         echo $VOLUME_PATH > "$PG_PLUGIN_HOME/volume_$APP"
 
         # Generate a random password for DB user
-        DB_PASSWORD=$(< /dev/urandom tr -dc A-Za-z0-9 | head -c 16)
-        echo "$DB_PASSWORD" > "$PG_PLUGIN_HOME/pwd_$APP"
+        DB_PASSWORD=$(openssl rand -base64 32)
+        echo $DB_PASSWORD > "$PG_PLUGIN_HOME/pwd_$APP"
         chown dokku: "$PG_PLUGIN_HOME/pwd_$APP"
         chmod 700 "$PG_PLUGIN_HOME/pwd_$APP"
 
